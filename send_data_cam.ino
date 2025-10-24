@@ -15,11 +15,11 @@
 #include "esp_http_server.h"
 
 // ================= Wi-Fi Credentials =================
-const char* ssid = "AEH_E6_407";
-const char* password = "30393257";
+const char* ssid = "sayeed";
+const char* password = "12345678";
 
 // ================= Main ESP32 Endpoint =================
-const char* mainEspUrl = "http://192.168.0.100/api/car_detected";  // Change IP to your main ESP32
+const char* mainEspUrl = "http://192.168.137.243/api/car_detected";  // Change IP to your main ESP32
 
 // ================= Web Server for Camera Stream =================
 httpd_handle_t camera_httpd = NULL;
@@ -112,247 +112,42 @@ const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE HTML>
 <html>
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ESP32-CAM Car Detection</title>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #1a1a1a; color: #fff; }
-    .container { max-width: 1200px; margin: 0 auto; }
-    .header { text-align: center; margin-bottom: 30px; }
-    .header h1 { color: #4CAF50; margin: 0; }
-    .content { display: grid; grid-template-columns: 1fr 300px; gap: 20px; }
-    .camera-section { background: #2a2a2a; border-radius: 10px; padding: 20px; }
-    .stats-section { background: #2a2a2a; border-radius: 10px; padding: 20px; }
-    .camera-container { text-align: center; }
-    .camera-stream { width: 100%; max-width: 800px; border: 2px solid #4CAF50; border-radius: 8px; }
-    .stats-item { margin-bottom: 15px; padding: 10px; background: #3a3a3a; border-radius: 5px; }
-    .stats-label { font-weight: bold; color: #4CAF50; }
-    .stats-value { font-size: 18px; margin-top: 5px; }
-    .detection-indicator { 
-      width: 20px; height: 20px; border-radius: 50%; 
-      display: inline-block; margin-right: 10px;
-    }
-    .detected { background: #4CAF50; }
-    .not-detected { background: #f44336; }
-    .confidence-bar { 
-      width: 100%; height: 20px; background: #555; 
-      border-radius: 10px; overflow: hidden; 
-    }
-    .confidence-fill { 
-      height: 100%; background: linear-gradient(90deg, #f44336, #ff9800, #4CAF50); 
-      transition: width 0.3s ease; 
-    }
-    @media (max-width: 768px) {
-      .content { grid-template-columns: 1fr; }
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ESP32-CAM</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;background:#000;color:#fff;padding:10px;text-align:center}
+img{width:100%;max-width:640px;border:2px solid #fff;margin:20px auto;display:block}
+.confidence{font-size:48px;font-weight:bold;margin:20px;padding:20px;background:#222;border-radius:10px;display:inline-block}
+.detection-box{max-width:640px;margin:20px auto;padding:20px;border-radius:10px;font-size:24px;font-weight:bold;background:#4CAF50;color:#000;display:none}
+</style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <h1>🚗 ESP32-CAM Car Detection System</h1>
-      <p>Real-time AI-powered car detection with Edge Impulse</p>
-    </div>
-    
-    <div class="content">
-      <div class="camera-section">
-        <h2>📸 Live Camera Feed</h2>
-        <div class="camera-container">
-          <img id="cameraStream" class="camera-stream" src="/stream" alt="Camera Stream">
-        </div>
-      </div>
-      
-      <div class="stats-section">
-        <h2>📊 Detection Stats</h2>
-        
-        <div class="stats-item">
-          <div class="stats-label">🎯 Current Status</div>
-          <div class="stats-value">
-            <span class="detection-indicator not-detected" id="statusIndicator"></span>
-            <span id="statusText">Loading...</span>
-          </div>
-        </div>
-        
-        <div class="stats-item">
-          <div class="stats-label">📈 Confidence Level</div>
-          <div class="stats-value" id="confidenceText">--</div>
-          <div class="confidence-bar">
-            <div class="confidence-fill" id="confidenceFill" style="width: 0%"></div>
-          </div>
-        </div>
-        
-        <div class="stats-item">
-          <div class="stats-label">🔢 Detection Count</div>
-          <div class="stats-value" id="detectionCount">--</div>
-        </div>
-        
-        <div class="stats-item">
-          <div class="stats-label">⏰ Last Detection</div>
-          <div class="stats-value" id="lastDetection">--</div>
-        </div>
-        
-        <div class="stats-item">
-          <div class="stats-label">🌐 ESP32-CAM IP</div>
-          <div class="stats-value" id="deviceIP">--</div>
-        </div>
-        
-        <div class="stats-item">
-          <div class="stats-label">🔄 Last Update</div>
-          <div class="stats-value" id="lastUpdate" style="font-size: 14px; color: #888;">Never</div>
-        </div>
-        
-        <div class="stats-item">
-          <div class="stats-label">📡 Main ESP32 URL</div>
-          <div class="stats-value" style="font-size: 12px; word-break: break-all;" id="mainEspUrl">%MAIN_ESP_URL%</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    console.log('🚀 ESP32-CAM Stats Script Loaded');
-    console.log('📍 Page URL:', window.location.href);
-    
-    let pollCount = 0;
-    let lastSuccessfulPoll = Date.now();
-    
-    function updateStats() {
-      pollCount++;
-      const timestamp = new Date().toLocaleTimeString();
-      console.log(`\n🔄 [Poll #${pollCount} at ${timestamp}] Fetching stats from /stats endpoint...`);
-      
-      fetch('/stats', {
-        cache: 'no-cache',
-        headers: {
-          'Cache-Control': 'no-cache'
-        }
-      })
-        .then(response => {
-          const timeSinceLastSuccess = ((Date.now() - lastSuccessfulPoll) / 1000).toFixed(1);
-          console.log(`📡 Response received - Status: ${response.status} ${response.statusText} (Last success: ${timeSinceLastSuccess}s ago)`);
-          if (!response.ok) {
-            throw new Error('HTTP ' + response.status + ': ' + response.statusText);
-          }
-          lastSuccessfulPoll = Date.now();
-          return response.json();
-        })
-        .then(data => {
-          console.log('✅ Stats data received:', data);
-          console.log('   - Car Detected:', data.carDetected);
-          console.log('   - Confidence:', (data.confidence * 100).toFixed(1) + '%');
-          console.log('   - Detection Count:', data.detectionCount);
-          
-          // Get all required elements
-          const indicator = document.getElementById('statusIndicator');
-          const statusText = document.getElementById('statusText');
-          const confidenceText = document.getElementById('confidenceText');
-          const confidenceFill = document.getElementById('confidenceFill');
-          const detectionCount = document.getElementById('detectionCount');
-          const lastDetection = document.getElementById('lastDetection');
-          const deviceIP = document.getElementById('deviceIP');
-          const lastUpdate = document.getElementById('lastUpdate');
-          
-          // Validate all elements exist
-          if (!indicator) { console.error('❌ Element not found: statusIndicator'); return; }
-          if (!statusText) { console.error('❌ Element not found: statusText'); return; }
-          if (!confidenceText) { console.error('❌ Element not found: confidenceText'); return; }
-          if (!confidenceFill) { console.error('❌ Element not found: confidenceFill'); return; }
-          
-          console.log('🔄 Updating UI elements...');
-          
-          // Update detection status
-          if (data.carDetected) {
-            indicator.className = 'detection-indicator detected';
-            statusText.textContent = 'Car Detected!';
-            statusText.style.color = '#4CAF50';
-            console.log('   ✅ Status: Car Detected (Green)');
-          } else {
-            indicator.className = 'detection-indicator not-detected';
-            statusText.textContent = 'No Car Detected';
-            statusText.style.color = '#fff';
-            console.log('   ℹ️ Status: No Car Detected (Red)');
-          }
-          
-          // Update confidence level
-          const confidence = Math.round(data.confidence * 100);
-          confidenceText.textContent = confidence + '%';
-          confidenceFill.style.width = confidence + '%';
-          console.log('   📈 Confidence bar set to:', confidence + '%');
-          
-          // Update other stats
-          if (detectionCount) detectionCount.textContent = data.detectionCount || 0;
-          if (lastDetection) lastDetection.textContent = data.lastDetection || 'Never';
-          if (deviceIP) deviceIP.textContent = data.deviceIP || 'Unknown';
-          
-          // Update last update timestamp
-          if (lastUpdate) {
-            const now = new Date();
-            const timeStr = now.getHours().toString().padStart(2,'0') + ':' + 
-                           now.getMinutes().toString().padStart(2,'0') + ':' + 
-                           now.getSeconds().toString().padStart(2,'0');
-            lastUpdate.textContent = timeStr;
-            lastUpdate.style.color = '#4CAF50';
-            console.log('   🕒 Last Update:', timeStr);
-          }
-          
-          console.log('✅ UI update complete!\n');
-        })
-        .catch(err => {
-          console.error('❌ ERROR fetching stats:', err);
-          console.error('   Error message:', err.message);
-          console.error('   ⚠️  Polling will continue in 2 seconds...');
-          
-          // Show error in UI
-          const statusText = document.getElementById('statusText');
-          const lastUpdate = document.getElementById('lastUpdate');
-          
-          if (statusText) {
-            statusText.textContent = 'Connection Error';
-            statusText.style.color = '#f44336';
-            console.log('   ⚠️ Status updated to show error');
-          }
-          if (lastUpdate) {
-            lastUpdate.textContent = 'Failed: ' + err.message;
-            lastUpdate.style.color = '#f44336';
-          }
-          
-          console.log('❌ Please check:');
-          console.log('   1. ESP32-CAM is powered on');
-          console.log('   2. Connected to correct WiFi network');
-          console.log('   3. /stats endpoint is working');
-          console.log('   4. Serial Monitor shows: 📊 Stats request received\n');
-          
-          // Don't break the polling loop - it will retry automatically
-        });
-    }
-    
-    // Initialize when page loads
-    console.log('📄 Document ready state:', document.readyState);
-    
-    if (document.readyState === 'loading') {
-      console.log('⏳ Waiting for DOM to load...');
-      document.addEventListener('DOMContentLoaded', function() {
-        console.log('✅ DOM loaded! Starting stats updates every 2 seconds...\n');
-        updateStats();
-        setInterval(updateStats, 2000);
-      });
-    } else {
-      console.log('✅ DOM already loaded! Starting stats updates every 2 seconds...\n');
-      updateStats();
-      setInterval(updateStats, 2000);
-    }
-    
-    // Handle camera stream
-    const cameraStream = document.getElementById('cameraStream');
-    if (cameraStream) {
-      cameraStream.onerror = function() {
-        console.error('❌ Camera stream failed to load from /stream');
-        this.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iODAwIiBoZWlnaHQ9IjYwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzMzIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSIyMCIgZmlsbD0iI2ZmZiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZHk9Ii4zZW0iPkNhbWVyYSBTdHJlYW0gVW5hdmFpbGFibGU8L3RleHQ+PC9zdmc+';
-      };
-      cameraStream.onload = function() {
-        console.log('✅ Camera stream loaded successfully from /stream');
-      };
-    }
-  </script>
+<img src="/stream" alt="Camera">
+<div class="confidence" id="conf">--</div>
+<div class="detection-box" id="detectionBox">Car Detected</div>
+<script>
+function updateStats(){
+fetch('/stats')
+.then(function(response){return response.json();})
+.then(function(data){
+var conf=data.confidence*100;
+document.getElementById('conf').textContent=conf.toFixed(1)+'%';
+var box=document.getElementById('detectionBox');
+if(data.confidence>0.7){
+box.style.display='block';
+}else{
+box.style.display='none';
+}
+})
+.catch(function(error){
+console.log('Error:',error);
+});
+}
+setInterval(updateStats,1000);
+updateStats();
+</script>
 </body>
 </html>
 )rawliteral";
@@ -397,9 +192,9 @@ void loop() {
     
     if (carConfidence > confidence_threshold && millis() - lastTrigger > cooldown) {
         Serial.printf("🚗 ✅ Car detected! Confidence: %.2f%% → notifying main ESP32...\n", carConfidence * 100);
-        digitalWrite(FLASH_GPIO_NUM, HIGH); // Flash LED ON
+        // digitalWrite(FLASH_GPIO_NUM, HIGH); // Flash LED ON - DISABLED
         notifyMainESP(carConfidence);
-        digitalWrite(FLASH_GPIO_NUM, LOW);  // Flash LED OFF
+        // digitalWrite(FLASH_GPIO_NUM, LOW);  // Flash LED OFF - DISABLED
         lastTrigger = millis();
         detectionCount++;
         lastDetectionTime = String(millis() / 1000) + "s ago";
@@ -669,12 +464,8 @@ static int ei_camera_get_data(size_t offset, size_t length, float *out_ptr) {
 
 // ================= Camera Web Server Functions =================
 static esp_err_t index_handler(httpd_req_t *req) {
-    // Replace placeholder in HTML
-    String html = String(index_html);
-    html.replace("%MAIN_ESP_URL%", String(mainEspUrl));
-    
     httpd_resp_set_type(req, "text/html");
-    return httpd_resp_send(req, html.c_str(), html.length());
+    return httpd_resp_sendstr(req, index_html);
 }
 
 static esp_err_t stream_handler(httpd_req_t *req) {
@@ -724,28 +515,11 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 }
 
 static esp_err_t stats_handler(httpd_req_t *req) {
-    Serial.println("📊 Stats request received");
-    Serial.printf("   Current lastDetectionConfidence: %.3f (%.1f%%)\n", lastDetectionConfidence, lastDetectionConfidence * 100);
-    Serial.printf("   Current detectionCount: %lu\n", detectionCount);
-    Serial.printf("   Threshold: %.1f%%\n", confidence_threshold * 100);
-    Serial.printf("   Car detected? %s\n", lastDetectionConfidence > confidence_threshold ? "YES" : "NO");
-    
-    String json = "{";
-    json += "\"carDetected\":" + String(lastDetectionConfidence > confidence_threshold ? "true" : "false") + ",";
-    json += "\"confidence\":" + String(lastDetectionConfidence, 3) + ",";
-    json += "\"detectionCount\":" + String(detectionCount) + ",";
-    json += "\"lastDetection\":\"" + (lastDetectionTime.length() > 0 ? lastDetectionTime : "Never") + "\",";
-    json += "\"deviceIP\":\"" + WiFi.localIP().toString() + "\",";
-    json += "\"threshold\":" + String(confidence_threshold, 2) + ",";
-    json += "\"uptime\":" + String(millis() / 1000);
-    json += "}";
-    
-    Serial.println("📤 Sending stats: " + json);
-    
+    String json = "{\"confidence\":" + String(lastDetectionConfidence, 3) + "}";
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
-    return httpd_resp_send(req, json.c_str(), json.length());
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    return httpd_resp_sendstr(req, json.c_str());
 }
 
 void startCameraWebServer() {
