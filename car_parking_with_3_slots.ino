@@ -12,8 +12,8 @@
 LiquidCrystal_I2C lcd(LCD_ADDRESS, 16, 2);
 
 // ---------------- WiFi Config ----------------
-const char* WIFI_SSID = "sayeed";
-const char* WIFI_PASSWORD = "12345678";
+const char* WIFI_SSID = "WIFI_SSID";
+const char* WIFI_PASSWORD = "WIFI_PASSWORD";
 const char* MDNS_NAME = "esp32-parking"; // http://esp32-parking.local
 
 // ---------------- Pin Setup ----------------
