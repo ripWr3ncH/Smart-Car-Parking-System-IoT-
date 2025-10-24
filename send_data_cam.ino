@@ -15,8 +15,8 @@
 #include "esp_http_server.h"
 
 // ================= Wi-Fi Credentials =================
-const char* ssid = "sayeed";
-const char* password = "12345678";
+const char* ssid = "WIFI_SSID";
+const char* password = "WIFI_PASSWORD";
 
 // ================= Main ESP32 Endpoint =================
 const char* mainEspUrl = "http://192.168.137.243/api/car_detected";  // Change IP to your main ESP32
