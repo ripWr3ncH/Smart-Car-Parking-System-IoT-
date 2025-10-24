@@ -2,10 +2,18 @@
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <ESP32Servo.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// ---------------- LCD Setup ----------------
+#define LCD_SDA 21
+#define LCD_SCL 22
+#define LCD_ADDRESS 0x27  // Try 0x3F if 0x27 doesn't work
+LiquidCrystal_I2C lcd(LCD_ADDRESS, 16, 2);
 
 // ---------------- WiFi Config ----------------
-const char* WIFI_SSID = "AEH_E6_407";
-const char* WIFI_PASSWORD = "30393257";
+const char* WIFI_SSID = "sayeed";
+const char* WIFI_PASSWORD = "12345678";
 const char* MDNS_NAME = "esp32-parking"; // http://esp32-parking.local
 
 // ---------------- Pin Setup ----------------
@@ -31,11 +39,11 @@ int availableSlots = totalSlots;
 // ---------------- Gate/Servo ----------------
 // Entry gate servo angles
 int entryServoClosed = 90;      // Adjust for your linkage
-int entryServoOpen   = 0;       // Adjust for your linkage
+int entryServoOpen   = 20;       // Adjust for your linkage
 
 // Exit gate servo angles
-int exitServoClosed = 90;       // Adjust for your linkage
-int exitServoOpen   = 0;        // Adjust for your linkage
+int exitServoClosed = 100;       // Adjust for your linkage
+int exitServoOpen   = 20;        // Adjust for your linkage
 
 // Entry servo state
 volatile int entryCurrentAngle = entryServoClosed;
@@ -63,377 +71,200 @@ bool gateOpenedForEntry = false; // Track if gate was opened for an entry
 bool exitPaymentProcessed = false; // Track if payment was already processed for current exit
 bool lastExitActive = false;    // Track previous exit IR state
 
+// ---------------- LCD Display Variables ----------------
+bool showingBill = false;       // Track if bill is currently displayed
+unsigned long billDisplayStart = 0; // When bill started displaying
+const unsigned long billDisplayDuration = 5000; // Show bill for 5 seconds
+unsigned long lastLCDUpdate = 0;
+const unsigned long lcdUpdateInterval = 500; // Update LCD every 500ms
+
 // ---------------- Web Server ----------------
 WebServer server(80);
 
 // ---------------- HTML UI (inline) ----------------
 const char INDEX_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ESP32 Parking IoT</title>
+<title>Smart Parking</title>
 <style>
-  :root{--bg:#0e1116;--card:#171b22;--fg:#e6edf3;--muted:#9aa4b2;--ok:#2ea043;--bad:#f85149;--warn:#d29922;--accent:#4493f8}
-  body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
-  header{padding:16px 20px;background:#11161e;border-bottom:1px solid #232a33}
-  h1{font-size:18px;margin:0}
-  main{padding:20px;display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
-  .card{background:var(--card);border:1px solid #232a33;border-radius:10px;padding:16px}
-  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-  .tag{padding:4px 10px;border-radius:999px;font-size:12px;border:1px solid #2b323c;color:var(--muted)}
-  .tag.ok{border-color:#294b33;color:var(--ok)}
-  .tag.bad{border-color:#5a2b2b;color:var(--bad)}
-  .tag.warn{border-color:#5a4b2b;color:var(--warn)}
-  .big{font-size:28px;font-weight:700}
-  .muted{color:var(--muted)}
-  .slots{display:flex;gap:10px;margin-top:10px}
-  .slot{flex:1;min-width:100px;border:1px dashed #2b323c;border-radius:8px;padding:10px;text-align:center}
-  .slot.free{border-color:#294b33;color:var(--ok)}
-  .slot.occ{border-color:#5a2b2b;color:var(--bad)}
-  button{background:var(--accent);border:none;color:white;padding:10px 14px;border-radius:8px;cursor:pointer}
-  button.alt{background:#2b323c}
-  button:disabled{opacity:.6;cursor:not-allowed}
-  .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-  code{background:#0b0e13;border:1px solid #232a33;border-radius:6px;padding:2px 6px}
-  table{width:100%;border-collapse:collapse;margin-top:10px}
-  th,td{border:1px solid #232a33;padding:8px;text-align:center}
-  th{background:#11161e;color:var(--muted);font-weight:600}
-  .cost{color:var(--warn);font-weight:600}
-  .present{color:var(--ok)}
-  .absent{color:var(--muted)}
-  .payment-notification{
-    position:fixed;
-    top:50%;
-    left:50%;
-    transform:translate(-50%,-50%);
-    background:var(--warn);
-    color:#000;
-    padding:30px 40px;
-    border-radius:15px;
-    font-size:36px;
-    font-weight:700;
-    text-align:center;
-    box-shadow:0 10px 30px rgba(0,0,0,0.5);
-    z-index:1000;
-    display:none;
-    animation:pulse 2s infinite;
-    max-width:90vw;
-    max-height:90vh;
-    overflow-y:auto;
-  }
-  .payment-notification.show{display:block}
-  .payment-item{
-    margin-bottom:20px;
-    padding:20px;
-    background:rgba(0,0,0,0.1);
-    border-radius:10px;
-    border:2px solid transparent;
-  }
-  .payment-item.priority{
-    border-color:#ff6b35;
-    background:rgba(255,107,53,0.2);
-  }
-  .payment-amount{
-    font-size:42px;
-    font-weight:800;
-    margin-bottom:10px;
-  }
-  .payment-details{
-    font-size:18px;
-    font-weight:400;
-    margin-bottom:5px;
-  }
-  .payment-priority{
-    font-size:14px;
-    font-weight:600;
-    color:#ff6b35;
-    margin-top:10px;
-  }
-  .payment-queue-header{
-    font-size:24px;
-    margin-bottom:20px;
-    color:#000;
-  }
-  @keyframes pulse{
-    0%{transform:translate(-50%,-50%) scale(1)}
-    50%{transform:translate(-50%,-50%) scale(1.05)}
-    100%{transform:translate(-50%,-50%) scale(1)}
-  }
-  .overlay{
-    position:fixed;
-    top:0;
-    left:0;
-    width:100%;
-    height:100%;
-    background:rgba(0,0,0,0.7);
-    z-index:999;
-    display:none;
-  }
-  .overlay.show{display:block}
-  @media (max-width: 768px) {
-    main{grid-template-columns:1fr;padding:10px}
-    .grid{grid-template-columns:1fr}
-    table{font-size:14px}
-    th,td{padding:6px 4px}
-  }
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;background:#1a1a2e;color:#eee;padding:10px}
+.container{max-width:1000px;margin:0 auto}
+h1{text-align:center;padding:20px;background:#16213e;border-radius:10px;margin-bottom:20px}
+.sensors{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:15px}
+.sensor{background:#0f3460;padding:15px;border-radius:10px;text-align:center;border:2px solid}
+.sensor.active{border-color:#2ea043;background:#1e4d2b}
+.sensor.inactive{border-color:#555;background:#2a2a3e}
+.sensor-label{font-size:14px;margin-bottom:5px}
+.sensor-status{font-size:18px;font-weight:bold}
+.status{background:#0f3460;padding:20px;border-radius:10px;margin-bottom:15px;text-align:center}
+.slots{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:15px;margin:20px 0}
+.slot{padding:30px 20px;border-radius:10px;text-align:center;font-size:18px;font-weight:bold;border:3px solid}
+.free{background:#1e4d2b;border-color:#2ea043;color:#2ea043}
+.occ{background:#4d1e1e;border-color:#f85149;color:#f85149}
+.blocked{background:#4d3b1e;border-color:#d29922;color:#d29922}
+.info{background:#0f3460;padding:15px;border-radius:10px;margin-bottom:15px}
+table{width:100%;border-collapse:collapse;margin-top:10px}
+th,td{padding:10px;text-align:center;border-bottom:1px solid #333}
+th{background:#16213e;color:#d29922}
+.alert{background:#d29922;color:#000;padding:20px;border-radius:10px;text-align:center;display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:1000;min-width:400px;max-width:90vw;box-shadow:0 10px 30px rgba(0,0,0,0.5)}
+.alert.show{display:block;animation:pulse 1.5s infinite}
+.alert h2{font-size:24px;margin-bottom:15px;border-bottom:2px solid #000;padding-bottom:10px}
+.payment-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:15px;margin:15px 0}
+.payment-card{background:rgba(0,0,0,0.2);padding:15px;border-radius:8px;border:2px solid rgba(0,0,0,0.3)}
+.payment-card.first{border-color:#ff6b35;background:rgba(255,107,53,0.3)}
+.payment-card .amount{font-size:32px;font-weight:bold;margin:5px 0}
+.payment-card .details{font-size:14px;margin:3px 0}
+.payment-card .badge{display:inline-block;background:#000;color:#d29922;padding:3px 8px;border-radius:4px;font-size:11px;margin-top:5px;font-weight:bold}
+@keyframes pulse{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.05)}}
+.overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:999;display:none}
+.overlay.show{display:block}
+@media(max-width:768px){
+h1{font-size:20px;padding:15px}
+.sensors{grid-template-columns:1fr}
+.slots{grid-template-columns:1fr}
+.slot{font-size:16px;padding:20px}
+table{font-size:14px}
+th,td{padding:8px}
+}
 </style>
 </head>
 <body>
-<header><h1>🚗 ESP32 Parking IoT</h1></header>
+<div class="container">
+<h1>🚗 Smart Parking System</h1>
 
-<!-- Payment Notification Overlay -->
-<div class="overlay" id="paymentOverlay"></div>
-<div class="payment-notification" id="paymentNotification">
-  <div class="payment-queue-header" id="paymentQueueHeader">Payment Queue</div>
-  <div id="paymentQueue">
-    <!-- Payment items will be populated by JavaScript -->
-  </div>
-  <div style="font-size:16px;margin-top:20px;font-weight:400;color:#000;">
-    Drive to exit gate to complete payment (First out, first served)
-  </div>
+<div class="sensors">
+<div class="sensor" id="cameraSensor">
+<div class="sensor-label">📸 Camera</div>
+<div class="sensor-status">--</div>
+</div>
+<div class="sensor" id="entrySensor">
+<div class="sensor-label">🚪 Entry Sensor</div>
+<div class="sensor-status">--</div>
+</div>
+<div class="sensor" id="exitSensor">
+<div class="sensor-label">🚪 Exit Sensor</div>
+<div class="sensor-status">--</div>
+</div>
 </div>
 
-<main>
-  <section class="card" id="summary">
-    <div class="row">
-      <div class="big" id="avail">--/--</div>
-      <span class="tag" id="gate">Gate: ...</span>
-      <span class="tag" id="manual">Auto</span>
-    </div>
-    <div class="slots" id="slots"></div>
-  </section>
+<div class="status">
+<h2 id="avail">Loading...</h2>
+<p id="mode">System Status</p>
+</div>
 
-  <section class="card">
-    <h3>💰 Car Information & Costs</h3>
-    <table id="carTable">
-      <thead>
-        <tr>
-          <th>Slot</th>
-          <th>Car ID</th>
-          <th>Status</th>
-          <th>Duration</th>
-          <th>Cost (tk)</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td colspan="5" class="muted">Loading car data...</td></tr>
-      </tbody>
-    </table>
-  </section>
+<div class="slots" id="slots"></div>
 
-  <section class="card">
-    <h3>🎛 Controls</h3>
-    <div style="padding:10px;background:rgba(255,169,0,0.1);border-radius:8px;margin-bottom:10px;font-size:13px;color:var(--warn);" id="modeWarning">
-      ⚠️ Manual mode is for testing only. Gate will NOT respond to sensors.
-    </div>
-    <div class="row" style="margin:10px 0">
-      <button id="btn-auto" class="alt" onclick="setManual(0)">🤖 Auto Mode</button>
-      <button id="btn-manual" class="alt" onclick="setManual(1)">🛠️ Manual Mode</button>
-    </div>
-    <div class="row">
-      <button id="open" onclick="post('/api/open')" disabled>▲ Open Gate</button>
-      <button id="close" class="alt" onclick="post('/api/close')" disabled>▼ Close Gate</button>
-    </div>
-  </section>
+<div class="info">
+<h3>💰 Parking Details</h3>
+<table id="carTable">
+<thead><tr><th>Slot</th><th>Car</th><th>Status</th><th>Time</th><th>Cost</th></tr></thead>
+<tbody><tr><td colspan="5">Loading...</td></tr></tbody>
+</table>
+</div>
+</div>
 
-  <section class="card">
-    <h3>📊 Diagnostics</h3>
-    <div class="grid">
-      <div>IR Entry: <code id="ir_entry">-</code></div>
-      <div>IR Exit: <code id="ir_exit">-</code></div>
-      <div>IR Slot 1: <code id="ir_s1">-</code></div>
-      <div>IR Slot 2: <code id="ir_s2">-</code></div>
-      <div>IR Slot 3: <code id="ir_s3">-</code></div>
-      <div>Entry Servo: <code id="entry_ang">-</code></div>
-      <div>Exit Servo: <code id="exit_ang">-</code></div>
-      <div>Entry Target: <code id="entry_tang">-</code></div>
-      <div>Exit Target: <code id="exit_tang">-</code></div>
-      <div>Camera Car: <code id="cam_car">-</code></div>
-      <div>Last Cam Detection: <code id="cam_time">-</code></div>
-      <div>IP: <code id="ip">-</code></div>
-      <div>mDNS: <code id="mdns">-</code></div>
-    </div>
-  </section>
-</main>
+<div class="overlay" id="overlay"></div>
+<div class="alert" id="alert"></div>
+
 <script>
-let total = 0;
-function el(id){return document.getElementById(id)}
-function cls(elm, on, c){ if(on) elm.classList.add(c); else elm.classList.remove(c); }
+function $(id){return document.getElementById(id)}
 
-async function fetchStatus(){
-  try{
-    const r = await fetch('/status');
-    const j = await r.json();
-    total = j.total;
-    el('avail').textContent = `${j.available}/${j.total} free`;
-    const gate = el('gate');
-    gate.textContent = `Entry: ${j.entryGate} | Exit: ${j.exitGate}`;
-    const entryOpen = j.entryGate === 'Open';
-    const exitOpen = j.exitGate === 'Open';
-    gate.className = 'tag ' + ((entryOpen || exitOpen) ? 'ok' : '');
+async function update(){
+try{
+const r=await fetch('/status');
+const d=await r.json();
 
-    const manual = el('manual');
-    manual.textContent = j.manual ? 'Manual' : 'Auto';
-    manual.className = 'tag ' + (j.manual?'warn':'');
+if(d.available===0){
+  $('avail').textContent='No Slots Available';
+}else{
+  $('avail').textContent=`${d.available}/${d.total} Slots Available`;
+}
+$('mode').textContent='✅ Auto Mode Active';
 
-    // Update mode buttons to show active state
-    const btnAuto = el('btn-auto');
-    const btnManual = el('btn-manual');
-    if (j.manual) {
-      btnAuto.style.opacity = '0.5';
-      btnManual.style.opacity = '1';
-      btnManual.style.background = 'var(--warn)';
-    } else {
-      btnAuto.style.opacity = '1';
-      btnAuto.style.background = 'var(--ok)';
-      btnManual.style.opacity = '0.5';
-      btnManual.style.background = '#2b323c';
-    }
+const camera=$('cameraSensor');
+const entry=$('entrySensor');
+const exit=$('exitSensor');
 
-    // Show/hide mode warning
-    const modeWarning = el('modeWarning');
-    if (j.manual) {
-      modeWarning.style.display = 'block';
-      modeWarning.style.borderLeft = '3px solid var(--warn)';
-    } else {
-      modeWarning.style.display = 'none';
-    }
-
-    // enable manual buttons only in manual mode
-    el('open').disabled = !j.manual;
-    el('close').disabled = !j.manual;
-
-    // slots
-    const box = el('slots'); box.innerHTML = '';
-    j.slots.forEach((occ, idx)=>{
-      const d = document.createElement('div');
-      d.className = 'slot ' + (occ?'occ':'free');
-      d.textContent = `Slot ${idx+1}: ` + (occ?'Occupied':'Free');
-      box.appendChild(d);
-    });
-
-    // car information table
-    const tbody = el('carTable').getElementsByTagName('tbody')[0];
-    tbody.innerHTML = '';
-    if (j.cars && j.cars.length > 0) {
-      j.cars.forEach(car => {
-        const row = document.createElement('tr');
-        const statusClass = car.present ? 'present' : 'absent';
-        const statusText = car.present ? '🚗 Present' : (car.awaitingPayment ? '💳 Payment Due' : '⬜ Empty');
-        const costDisplay = car.cost > 0 ? `${car.cost} tk` : '-';
-        const durationDisplay = car.duration > 0 ? `${car.duration}s` : '-';
-        const carIdDisplay = car.carId > 0 ? `#${car.carId}` : '-';
-        
-        row.innerHTML = `
-          <td>Slot ${car.slot}</td>
-          <td>${carIdDisplay}</td>
-          <td class="${statusClass}">${statusText}</td>
-          <td>${durationDisplay}</td>
-          <td class="cost">${costDisplay}</td>
-        `;
-        tbody.appendChild(row);
-      });
-    } else {
-      tbody.innerHTML = '<tr><td colspan="5" class="muted">No car data available</td></tr>';
-    }
-
-    // Handle payment queue notifications
-    const overlay = el('paymentOverlay');
-    const notification = el('paymentNotification');
-    const queueContainer = el('paymentQueue');
-    const queueHeader = el('paymentQueueHeader');
-    
-    if (j.paymentQueue && j.paymentQueue.length > 0) {
-      // Update header
-      queueHeader.textContent = j.paymentQueue.length === 1 ? 
-        'Payment Due' : `Payment Queue (${j.paymentQueue.length} cars)`;
-      
-      // Clear existing items
-      queueContainer.innerHTML = '';
-      
-      // Add each payment item
-      j.paymentQueue.forEach((payment, index) => {
-        const item = document.createElement('div');
-        item.className = 'payment-item' + (index === 0 ? ' priority' : '');
-        
-        const priorityText = index === 0 ? 'NEXT TO PAY' : `Position ${index + 1}`;
-        const priorityColor = index === 0 ? '#ff6b35' : '#666';
-        
-        item.innerHTML = `
-          <div class="payment-amount">${payment.cost}tk</div>
-          <div class="payment-details">Car #${payment.carId} from Slot ${payment.slot}</div>
-          <div class="payment-priority" style="color:${priorityColor}">${priorityText}</div>
-        `;
-        
-        queueContainer.appendChild(item);
-      });
-      
-      overlay.classList.add('show');
-      notification.classList.add('show');
-    } else {
-      overlay.classList.remove('show');
-      notification.classList.remove('show');
-    }
-
-    el('ir_entry').textContent = j.ir.entry===0?'LOW':'HIGH';
-    el('ir_exit').textContent  = j.ir.exit===0?'LOW':'HIGH';
-    el('ir_s1').textContent    = j.ir.slot1===0?'LOW':'HIGH';
-    el('ir_s2').textContent    = j.ir.slot2===0?'LOW':'HIGH';
-    el('ir_s3').textContent    = j.ir.slot3===0?'LOW':'HIGH';
-    el('entry_ang').textContent = j.entryAngle;
-    el('exit_ang').textContent = j.exitAngle;
-    el('entry_tang').textContent = j.entryTarget;
-    el('exit_tang').textContent = j.exitTarget;
-    
-    // Camera detection status
-    if (j.camera) {
-      el('cam_car').textContent = j.camera.carDetected ? 'DETECTED' : 'NONE';
-      el('cam_car').style.color = j.camera.carDetected ? 'var(--ok)' : 'var(--muted)';
-      if (j.camera.lastDetection > 0) {
-        const timeSince = Math.floor((Date.now() - j.camera.lastDetection) / 1000);
-        el('cam_time').textContent = `${timeSince}s ago`;
-      } else {
-        el('cam_time').textContent = 'Never';
-      }
-    }
-    
-    el('ip').textContent = j.ip || '-';
-    el('mdns').textContent = j.mdns || '-';
-  }catch(e){
-    console.error('Fetch error:', e);
-  }
+if(d.camera&&d.camera.carDetected){
+camera.className='sensor active';
+camera.querySelector('.sensor-status').textContent='✓ Detected';
+}else{
+camera.className='sensor inactive';
+camera.querySelector('.sensor-status').textContent='✗ No Car';
 }
 
-function post(path){
-  fetch(path, {method:'POST'})
-    .then(response => {
-      if (!response.ok) {
-        return response.text().then(text => {
-          alert('❌ ' + text);
-          throw new Error(text);
-        });
-      }
-      return response;
-    })
-    .then(fetchStatus)
-    .catch(err => console.error('Error:', err));
+if(d.ir&&d.ir.entry===0){
+entry.className='sensor active';
+entry.querySelector('.sensor-status').textContent='✓ Active';
+}else{
+entry.className='sensor inactive';
+entry.querySelector('.sensor-status').textContent='✗ Clear';
 }
-function setManual(on){
-  fetch('/api/manual?enable='+(on?1:0), {method:'POST'})
-    .then(response => {
-      if (on) {
-        console.log('⚠️ Manual mode enabled - Auto detection disabled');
-      } else {
-        console.log('✅ Auto mode enabled - Sensors active');
-      }
-      return response;
-    })
-    .then(fetchStatus);
+
+if(d.ir&&d.ir.exit===0){
+exit.className='sensor active';
+exit.querySelector('.sensor-status').textContent='✓ Active';
+}else{
+exit.className='sensor inactive';
+exit.querySelector('.sensor-status').textContent='✗ Clear';
 }
-setInterval(fetchStatus, 1000);
-fetchStatus();
+
+const slots=$('slots');
+slots.innerHTML='';
+d.slots.forEach((occ,i)=>{
+const blocked=d.blockedSlots&&d.blockedSlots[i];
+const div=document.createElement('div');
+div.className='slot '+(blocked?'blocked':occ?'occ':'free');
+div.textContent=`SLOT ${i+1}\n${blocked?'🔒 Payment Due':occ?'🚗 Occupied':'✓ Free'}`;
+slots.appendChild(div);
+});
+
+const tbody=$('carTable').getElementsByTagName('tbody')[0];
+tbody.innerHTML='';
+if(d.cars&&d.cars.length>0){
+d.cars.forEach(car=>{
+const row=tbody.insertRow();
+row.innerHTML=`
+<td>Slot ${car.slot}</td>
+<td>${car.carId>0?'#'+car.carId:'-'}</td>
+<td>${car.present?'🚗 Present':car.awaitingPayment?'💳 Payment Due':'⬜ Empty'}</td>
+<td>${car.duration>0?car.duration+'s':'-'}</td>
+<td>${car.cost>0?car.cost+' tk':'-'}</td>
+`;
+});
+}else{
+tbody.innerHTML='<tr><td colspan="5">No cars parked</td></tr>';
+}
+
+const overlay=$('overlay');
+const alert=$('alert');
+if(d.paymentQueue&&d.paymentQueue.length>0){
+let html='<h2>💳 PAYMENT DUE</h2><div class="payment-grid">';
+d.paymentQueue.forEach((p,i)=>{
+html+=`<div class="payment-card ${i===0?'first':''}">
+<div class="amount">${p.cost} tk</div>
+<div class="details">� Car #${p.carId}</div>
+<div class="details">📍 Slot ${p.slot}</div>
+<div class="badge">${i===0?'⚡ NEXT TO PAY':'Position '+(i+1)}</div>
+</div>`;
+});
+html+='</div><div style="font-size:14px;margin-top:10px">Drive to Exit Gate to Complete Payment</div>';
+alert.innerHTML=html;
+alert.classList.add('show');
+overlay.classList.add('show');
+}else{
+alert.classList.remove('show');
+overlay.classList.remove('show');
+}
+}catch(e){console.error(e)}
+}
+
+setInterval(update,1000);
+update();
 </script>
 </body>
 </html>
@@ -553,6 +384,72 @@ void removeFromPaymentQueue(unsigned long carId) {
       break;
     }
   }
+}
+
+// ---------------- LCD Functions ----------------
+void updateLCD() {
+  unsigned long now = millis();
+  
+  // If showing bill, check if it's time to clear it
+  if (showingBill && (now - billDisplayStart >= billDisplayDuration)) {
+    showingBill = false;
+    Serial.println("📺 Bill display timeout - returning to slot status");
+  }
+  
+  // Update LCD at regular intervals (unless showing bill)
+  if (!showingBill && (now - lastLCDUpdate < lcdUpdateInterval)) {
+    return;
+  }
+  lastLCDUpdate = now;
+  
+  lcd.clear();
+  
+  if (showingBill) {
+    // Don't update during bill display to prevent flickering
+    return;
+  }
+  
+  // Normal display - show parking availability
+  if (availableSlots == 0) {
+    // All slots occupied
+    lcd.setCursor(0, 0);
+    lcd.print("  PARKING FULL  ");
+    lcd.setCursor(0, 1);
+    lcd.print("   0/3 FREE     ");
+  } else {
+    // Show available slots
+    lcd.setCursor(0, 0);
+    lcd.print("SLOTS AVAILABLE:");
+    lcd.setCursor(0, 1);
+    char buffer[17];
+    snprintf(buffer, sizeof(buffer), "Free:%d  Full:%d/%d", 
+             availableSlots, 
+             totalSlots - availableSlots, 
+             totalSlots);
+    lcd.print(buffer);
+  }
+}
+
+void displayBillOnLCD(unsigned long carId, int slot, unsigned long cost, unsigned long duration) {
+  lcd.clear();
+  
+  // Line 1: Car ID and Slot
+  lcd.setCursor(0, 0);
+  char line1[17];
+  snprintf(line1, sizeof(line1), "Car#%lu Slot %d", carId, slot);
+  lcd.print(line1);
+  
+  // Line 2: Cost and Duration
+  lcd.setCursor(0, 1);
+  char line2[17];
+  snprintf(line2, sizeof(line2), "%lutk  %lus", cost, duration);
+  lcd.print(line2);
+  
+  showingBill = true;
+  billDisplayStart = millis();
+  
+  Serial.printf("📺 LCD showing bill: Car #%lu, Slot %d, %lu tk, %lu seconds\n", 
+                carId, slot, cost, duration);
 }
 
 unsigned long lastSenseMs = 0;
@@ -697,6 +594,10 @@ void autoGateLogic() {
     }
     
     if (paymentProcessed) {
+      // DISPLAY BILL ON LCD
+      displayBillOnLCD(firstPayment.carId, firstPayment.slot, firstPayment.cost, 
+                      (firstPayment.cost > 0) ? firstPayment.cost : 0); // duration = cost (1tk/sec)
+      
       // UNBLOCK the slot so it can be reused
       int slotIndex = firstPayment.slot - 1; // Convert to 0-based index
       slotBlocked[slotIndex] = false;
@@ -735,6 +636,7 @@ void autoGateLogic() {
   static unsigned long lastDebugLog = 0;
   if (millis() - lastDebugLog > 1000) { // Log every second
     Serial.println("=== Gate Logic Status ===");
+    Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
     Serial.printf("Entry IR: %s | Exit IR: %s | Camera: %s | Available Slots: %d\n", 
                   entryActive ? "TRIGGERED" : "clear", 
                   exitActive ? "TRIGGERED" : "clear",
@@ -970,6 +872,19 @@ void setup() {
   Serial.begin(115200);
   Serial.println("\n=== ESP32 Parking System Starting ===");
   
+  // Initialize LCD
+ // Wire.begin(LCD_SDA, LCD_SCL);
+ //Wire.setClock(100000);
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("ESP32 PARKING");
+  lcd.setCursor(0, 1);
+  lcd.print("  STARTING...   ");
+  Serial.println("📺 LCD initialized (16x2 I2C)");
+  delay(2000);
+  
   // GPIO
   pinMode(IR_ENTRY, INPUT);
   pinMode(IR_EXIT, INPUT);
@@ -1030,6 +945,13 @@ void setup() {
   Serial.println("🌐 Web server started");
   Serial.println("📸 Ready to receive ESP32-CAM car detections");
   Serial.println("=== System Ready ===\n");
+  
+  // Show initial LCD status
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SLOTS AVAILABLE:");
+  lcd.setCursor(0, 1);
+  lcd.print("Free:3  Full:0/3");
 }
 
 
@@ -1038,4 +960,5 @@ void loop() {
   readSensorsAndUpdateSlots();
   autoGateLogic();
   updateServos();
+  updateLCD(); // Update LCD display
 }
